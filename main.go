@@ -4,6 +4,7 @@ import(
     "os"
     "os/user"
     "flag"
+    "errors"
     "encoding/json"
     "encoding/base64"
     "crypto/aes"
@@ -13,6 +14,7 @@ import(
     "bufio"
     "crypto/rand"
     "math/big"
+    "runtime"
     "io/ioutil"
     "golang.org/x/crypto/ssh/terminal"
     "github.com/howeyc/gopass"
@@ -24,7 +26,7 @@ const SCRYPT_R = 8
 const SCRYPT_P = 1
 
 var filenamePtr *string
-
+var usr *user.User
 // === Data structure ===
 
 type Record struct{
@@ -317,12 +319,65 @@ func ListPasswordEntries() {
     }
 }
 
-func main() {
+func GetDropboxPath() string{
+    type DropboxInfo struct {
+        Personal struct{
+            Path string `json:"path"`
+        } `json:"personal"`
+    }
+    var info DropboxInfo
+    var infoFile string
+    if runtime.GOOS == "windows" {
+        infoFile = "%APPDATA%/Dropbox/info.json"
+    } else {
+        infoFile = usr.HomeDir + "/.dropbox/info.json"
+    }
+    out, err := ioutil.ReadFile(infoFile)
+    if err != nil {
+        fmt.Println(err, infoFile)
+        return ""
+    }
+    err = json.Unmarshal(out, &info)
+    if err != nil {
+        fmt.Println(err)
+        return ""
+    }
+    return info.Personal.Path
+}
+
+func SetKeyFilePath() ( error) {
     usr, err := user.Current()
     if err != nil {
         panic(err)
     }
-    filenamePtr = flag.String("f", usr.HomeDir+"/blakey.json", "filename (optional)")
+    default_path := "PLACEHOLDER_PATH"
+    filenamePtr = flag.String("f", default_path, "filename (optional)")
+    if *filenamePtr != default_path {
+        if _, err := os.Stat(*filenamePtr); os.IsNotExist(err) {
+            return errors.New("Unable to find path")
+        }
+        return nil
+    }
+    dropboxPath := GetDropboxPath()
+    if dropboxPath != "" {
+        if _, err = os.Stat(dropboxPath+"/kii.json"); !os.IsNotExist(err) {
+            *filenamePtr = dropboxPath+"/kii.json"
+            return nil
+        }
+    }
+    if _, err = os.Stat(usr.HomeDir+"/kii.json"); !os.IsNotExist(err) {
+        *filenamePtr = usr.HomeDir+"/kii.json"
+        return nil
+    }
+    return errors.New("Unable to find file")
+}
+
+func main() {
+    var err error
+    usr, err = user.Current()
+    if err != nil {
+        panic(err)
+    }
     if len(os.Args) < 2 {
         fmt.Println("Valid Commands: \ngenfile\ngenpw\nget\nlist")
         return
@@ -330,31 +385,49 @@ func main() {
     cmd := os.Args[1]
     switch cmd {
     case "genfile":
+        filenamePtr = flag.String("f", usr.HomeDir + "/kii.json", "filename (optional)")
+        flag.CommandLine.Parse(os.Args[3:])
         GeneratePasswordFile()
     case "set":
         if len(os.Args) < 3 {
             fmt.Println("Not enough arguments, a label is required")
             return
         }
+        err := SetKeyFilePath();
+        if err != nil {
+            fmt.Println(err)
+            return
+        }
+        fmt.Println("Using", *filenamePtr)
         name := os.Args[2]
         usrPtr := flag.String("u", "", "username (optional)")
         urlPtr := flag.String("url", "", "url (optional)")
         lenPtr := flag.Uint("l", 64, "password length (optional)")
         nosymPtr := flag.Bool("nosymbols", false, "makes the password not contain symbols")
-        err := flag.CommandLine.Parse(os.Args[3:])
-        if err != nil {
-            fmt.Println("RIP")
-            return
-        }
+        flag.CommandLine.Parse(os.Args[3:])
         SetPassword(name, *usrPtr, *urlPtr, *lenPtr, !*nosymPtr)
     case "get":
+        err := SetKeyFilePath();
+        if err != nil {
+            fmt.Println(err)
+            return
+        }
+        fmt.Println("Using", *filenamePtr)
         if len(os.Args) < 3 {
             fmt.Println("Not enough arguments")
             return
         }
+        flag.CommandLine.Parse(os.Args[3:])
         name := os.Args[2]
         GetPassword(name)
     case "list":
+        err := SetKeyFilePath();
+        if err != nil {
+            fmt.Println(err)
+            return
+        }
+        fmt.Println("Using", *filenamePtr)
+        flag.CommandLine.Parse(os.Args[3:])
         ListPasswordEntries()
     default:
         fmt.Println("Invalid command.")

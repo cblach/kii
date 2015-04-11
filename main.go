@@ -16,6 +16,7 @@ import(
     "math/big"
     "runtime"
     "io/ioutil"
+    "path/filepath"
     "golang.org/x/crypto/ssh/terminal"
     "github.com/howeyc/gopass"
     "github.com/atotto/clipboard"
@@ -328,7 +329,7 @@ func GetDropboxPath() string{
     var info DropboxInfo
     var infoFile string
     if runtime.GOOS == "windows" {
-        infoFile = "%APPDATA%/Dropbox/info.json"
+        infoFile = usr.HomeDir + "/AppData/Roaming/Dropbox/info.json"
     } else {
         infoFile = usr.HomeDir + "/.dropbox/info.json"
     }
@@ -342,7 +343,7 @@ func GetDropboxPath() string{
         fmt.Println(err)
         return ""
     }
-    return info.Personal.Path
+    return filepath.ToSlash(info.Personal.Path)
 }
 
 func SetKeyFilePath() ( error) {

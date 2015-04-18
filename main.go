@@ -428,7 +428,7 @@ func main() {
             return
         }
         fmt.Println("Using", *filenamePtr)
-        flag.CommandLine.Parse(os.Args[3:])
+        flag.CommandLine.Parse(os.Args[2:])
         ListPasswordEntries()
     default:
         fmt.Println("Invalid command.")

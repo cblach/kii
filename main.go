@@ -12,7 +12,6 @@ import(
     "github.com/howeyc/gopass"
     "github.com/atotto/clipboard"
     "golang.org/x/crypto/scrypt"
-    "golang.org/x/crypto/ssh/terminal"
     "io"
     "io/ioutil"
     "log"
@@ -24,9 +23,15 @@ import(
     "sort"
 )
 
-const SCRYPT_N = 32768 // 16384
-const SCRYPT_R = 8
-const SCRYPT_P = 1
+/* Master Password Validation scrypt parameters */
+const VALIDATION_SCRYPT_N = 262144 // 16384
+const VALIDATION_SCRYPT_R = 8
+const VALIDATION_SCRYPT_P = 1
+
+/* Encryption scrypt parameters */
+const ENCRYPTION_SCRYPT_N = 32768 // 16384
+const ENCRYPTION_SCRYPT_R = 8
+const ENCRYPTION_SCRYPT_P = 1
 
 var filenamePtr *string
 var usr *user.User
@@ -50,59 +55,59 @@ type PWData struct {
 
 // === Encryption ===
 
-// encrypt string to base64 crypto using AES
 func encrypt(key []byte, text string) string {
 	// key := []byte(keyText)
 	plaintext := []byte(text)
  
-	block, err := aes.NewCipher(key)
+	aes, err := aes.NewCipher(key)
 	if err != nil {
-		panic(err)
+		 log.Fatalln(err)
 	}
- 
-	// The IV needs to be unique, but not secure. Therefore it's common to
+    aesgcm, err := cipher.NewGCM(aes)
+    if err != nil {
+        log.Fatalln(err)
+    }
+    nsz := aesgcm.NonceSize() 
+	// The nonce needs to be unique, but not secure. Therefore it's common to
 	// include it at the beginning of the ciphertext.
-	ciphertext := make([]byte, aes.BlockSize+len(plaintext))
-	iv := ciphertext[:aes.BlockSize]
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		panic(err)
+	ct := make([]byte, nsz + len(plaintext) + aesgcm.Overhead())
+	nonce := ct[:nsz]
+    enc := ct[nsz:]
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		log.Fatalln(err)
 	}
- 
-	stream := cipher.NewCFBEncrypter(block, iv)
-	stream.XORKeyStream(ciphertext[aes.BlockSize:], plaintext)
- 
-	// convert to base64
-	return base64.URLEncoding.EncodeToString(ciphertext)
+    enc = aesgcm.Seal(enc[:0], nonce, plaintext, nil)
+	return base64.StdEncoding.EncodeToString(ct[:nsz + len(enc)])
 }
  
 // decrypt from base64 to decrypted string
 func decrypt(key []byte, cryptoText string) string {
-	ciphertext, _ := base64.URLEncoding.DecodeString(cryptoText)
- 
-	block, err := aes.NewCipher(key)
+	ct, err := base64.StdEncoding.DecodeString(cryptoText)
+    if err != nil {
+        log.Fatalln(err)
+    } 
+	aes, err := aes.NewCipher(key)
 	if err != nil {
-		log.Fatalln(err)
+		 log.Fatalln(err)
 	}
- 
-	// The IV needs to be unique, but not secure. Therefore it's common to
-	// include it at the beginning of the ciphertext.
-	if len(ciphertext) < aes.BlockSize {
-		log.Fatalln("ciphertext too short")
-	}
-	iv := ciphertext[:aes.BlockSize]
-	ciphertext = ciphertext[aes.BlockSize:]
- 
-	stream := cipher.NewCFBDecrypter(block, iv)
- 
-	// XORKeyStream can work in-place if the two arguments are the same.
-	stream.XORKeyStream(ciphertext, ciphertext)
- 
-	return fmt.Sprintf("%s", ciphertext)
+    aesgcm, err := cipher.NewGCM(aes)
+    if err != nil {
+        log.Fatalln(err)
+    }
+    nonce := ct[:aesgcm.NonceSize()]
+    enc := ct[aesgcm.NonceSize():]
+
+    plaintext, err := aesgcm.Open(enc[:0], nonce, enc, nil)
+    if err != nil {
+        fmt.Println("Invalid password")
+        os.Exit(0)
+    }
+	// convert to base64
+	return string(plaintext)
 }
 
 // === Salt and Hash ===
-
-func GenerateSalt() []byte{
+func genSalt() []byte{
     salt := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		log.Fatalln(err)
@@ -110,21 +115,39 @@ func GenerateSalt() []byte{
     return salt
 }
 
-func GenerateHash(key []byte, salt []byte) []byte {
-    hash, err := scrypt.Key(key, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P, 32)
+func genValidationHash(key []byte, salt []byte) []byte {
+    hash, err := scrypt.Key(key, salt, VALIDATION_SCRYPT_N, VALIDATION_SCRYPT_R, VALIDATION_SCRYPT_P, 32)
     if err != nil {
         log.Fatalln(err)
     }
     return hash
 }
-func GenerateKey_HashNSalt(key []byte) ([]byte, []byte) {
-    salt := GenerateSalt()
-    hash := GenerateHash(key, salt)
+func genEncryptionHash(key []byte, salt []byte) []byte {
+    hash, err := scrypt.Key(key, salt, ENCRYPTION_SCRYPT_N, ENCRYPTION_SCRYPT_R, ENCRYPTION_SCRYPT_P, 32)
+    if err != nil {
+        log.Fatalln(err)
+    }
+    return hash
+}
+
+func genValidationHashSalt(key []byte) ([]byte, []byte) {
+    /* Make salt */
+    salt := genSalt()
+    /* Make hash */
+    hash := genValidationHash(key, salt)
     return hash, salt
 }
 
-func ValidateKey( key []byte, validhashstr string,saltstr string) bool {
-    validhash, err := base64.URLEncoding.DecodeString(validhashstr)
+func genEncryptionHashSalt(key []byte) ([]byte, []byte) {
+    /* Make salt */
+    salt := genSalt()
+    /* Make hash */
+    hash := genEncryptionHash(key, salt)
+    return hash, salt
+}
+
+func ValidateMasterPassword(pw []byte, hashstr string, saltstr string) bool {
+    hash, err := base64.URLEncoding.DecodeString(hashstr)
     if err != nil{
         log.Fatalln(err)
     }
@@ -132,13 +155,14 @@ func ValidateKey( key []byte, validhashstr string,saltstr string) bool {
     if err != nil{
         log.Fatalln(err)
     }
-    newhash, err := scrypt.Key(key, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P, 32)
+    newhash, err := scrypt.Key(pw, salt, VALIDATION_SCRYPT_N, VALIDATION_SCRYPT_R, VALIDATION_SCRYPT_P, 32)
     if err != nil {
         log.Fatalln(err)
     }
-    return string(validhash) == string(newhash)
+    return string(hash) == string(newhash)
 }
 
+/* Ask for confirmation string */
 func Confirm(confirmstr string) bool{
     stdinReader := bufio.NewReader(os.Stdin)
     line, _, err := stdinReader.ReadLine()
@@ -146,14 +170,6 @@ func Confirm(confirmstr string) bool{
         log.Fatalln(err)
     }
     return string(line) == confirmstr
-}
-
-func GetPasswd() []byte{
-    key, err := terminal.ReadPassword(int(os.Stdin.Fd()))
-    if err != nil {
-        log.Fatalln(err)
-    }
-    return key
 }
 
 // === Generate Random Password ===
@@ -226,7 +242,7 @@ func GeneratePasswordFile() {
     if err != nil {
         log.Fatalln(err)
     }
-    hash, salt := GenerateKey_HashNSalt(pass)
+    hash, salt := genValidationHashSalt(pass)
     pwd.KeySalt = base64.URLEncoding.EncodeToString(salt)
     pwd.KeyHash = base64.URLEncoding.EncodeToString(hash)
     savePWData(&pwd)
@@ -253,15 +269,15 @@ func SetPassword(name string, username string, url string, length uint, useSymbo
         }
     }
     fmt.Println("Enter encryption password")
-    key, err := gopass.GetPasswd()
+    masterpw, err := gopass.GetPasswd()
     if err != nil {
         log.Fatalln(err)
     }
-    if !ValidateKey(key, pwd.KeyHash, pwd.KeySalt) {
+    if !ValidateMasterPassword(masterpw, pwd.KeyHash, pwd.KeySalt) {
         fmt.Println("Invalid password")
         return
     }
-    hash, salt := GenerateKey_HashNSalt(key)
+    hash, salt := genEncryptionHashSalt(masterpw)
     // == Generate Random Password ===
     password := GenerateRandomPassword(length, useSymbols)
     if password == "" {
@@ -302,21 +318,16 @@ func GetPassword(name string) {
     if err != nil {
         log.Fatalln(err)
     }
-    if !ValidateKey(key, pwd.KeyHash, pwd.KeySalt) {
-        fmt.Println("Invalid password")
-        return
-    }
-    fmt.Println("Accepted Password, Starting Decryption")
     salt, err := base64.URLEncoding.DecodeString(rec.Salt)
     if err != nil{
         panic(err)
     }
-    hash := GenerateHash(key, salt)
+    hash := genEncryptionHash(key, salt)
     clipboard.WriteAll(decrypt(hash, rec.EncryptedPassword))
     fmt.Println("Password Copied to Clipboard")
 }
 
-func ListPasswordEntries() {
+func list() {
     pwd, err := loadPWData()
     if err != nil {
         fmt.Println(err)
@@ -400,7 +411,7 @@ func main() {
     switch cmd {
     case "genfile":
         filenamePtr = flag.String("f", usr.HomeDir + "/kii.json", "filename (optional)")
-        flag.CommandLine.Parse(os.Args[3:])
+        flag.CommandLine.Parse(os.Args[2:])
         GeneratePasswordFile()
     case "set":
         if len(os.Args) < 3 {
@@ -442,7 +453,7 @@ func main() {
         }
         fmt.Println("Using", *filenamePtr)
         flag.CommandLine.Parse(os.Args[2:])
-        ListPasswordEntries()
+        list()
     default:
         fmt.Println("Invalid command.")
     }

@@ -1,25 +1,27 @@
 package main
 import(
-    "fmt"
-    "os"
-    "os/user"
-    "flag"
-    "errors"
-    "encoding/json"
-    "encoding/base64"
+    "bufio"
     "crypto/aes"
     "crypto/cipher"
-    "golang.org/x/crypto/scrypt"
-    "io"
-    "bufio"
     "crypto/rand"
-    "math/big"
-    "runtime"
-    "io/ioutil"
-    "path/filepath"
-    "golang.org/x/crypto/ssh/terminal"
+    "encoding/json"
+    "encoding/base64"
+    "errors"
+    "flag"
+    "fmt"
     "github.com/howeyc/gopass"
     "github.com/atotto/clipboard"
+    "golang.org/x/crypto/scrypt"
+    "golang.org/x/crypto/ssh/terminal"
+    "io"
+    "io/ioutil"
+    "log"
+    "math/big"
+    "os"
+    "os/user"
+    "path/filepath"
+    "runtime"
+    "sort"
 )
 
 const SCRYPT_N = 32768 // 16384
@@ -79,13 +81,13 @@ func decrypt(key []byte, cryptoText string) string {
  
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		panic(err)
+		log.Fatalln(err)
 	}
  
 	// The IV needs to be unique, but not secure. Therefore it's common to
 	// include it at the beginning of the ciphertext.
 	if len(ciphertext) < aes.BlockSize {
-		panic("ciphertext too short")
+		log.Fatalln("ciphertext too short")
 	}
 	iv := ciphertext[:aes.BlockSize]
 	ciphertext = ciphertext[aes.BlockSize:]
@@ -103,7 +105,7 @@ func decrypt(key []byte, cryptoText string) string {
 func GenerateSalt() []byte{
     salt := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
-		panic(err)
+		log.Fatalln(err)
 	}
     return salt
 }
@@ -111,7 +113,7 @@ func GenerateSalt() []byte{
 func GenerateHash(key []byte, salt []byte) []byte {
     hash, err := scrypt.Key(key, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P, 32)
     if err != nil {
-        panic(err)
+        log.Fatalln(err)
     }
     return hash
 }
@@ -124,15 +126,15 @@ func GenerateKey_HashNSalt(key []byte) ([]byte, []byte) {
 func ValidateKey( key []byte, validhashstr string,saltstr string) bool {
     validhash, err := base64.URLEncoding.DecodeString(validhashstr)
     if err != nil{
-        panic(err)
+        log.Fatalln(err)
     }
     salt, err := base64.URLEncoding.DecodeString(saltstr)
     if err != nil{
-        panic(err)
+        log.Fatalln(err)
     }
     newhash, err := scrypt.Key(key, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P, 32)
     if err != nil {
-        panic(err)
+        log.Fatalln(err)
     }
     return string(validhash) == string(newhash)
 }
@@ -141,7 +143,7 @@ func Confirm(confirmstr string) bool{
     stdinReader := bufio.NewReader(os.Stdin)
     line, _, err := stdinReader.ReadLine()
     if err != nil {
-        panic(err)
+        log.Fatalln(err)
     }
     return string(line) == confirmstr
 }
@@ -149,7 +151,7 @@ func Confirm(confirmstr string) bool{
 func GetPasswd() []byte{
     key, err := terminal.ReadPassword(int(os.Stdin.Fd()))
     if err != nil {
-        panic(err)
+        log.Fatalln(err)
     }
     return key
 }
@@ -157,22 +159,18 @@ func GetPasswd() []byte{
 // === Generate Random Password ===
 func GenerateRandomPassword(ncharacters uint, usesymbols bool) string {
     if ncharacters > 255 {
-        fmt.Println("Invalid Password Size")
-        return ""
+        log.Fatalln("Invalid Password Size")
     }
     password := make([]byte, ncharacters)
-    var palette string
-    base := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    palette := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
     symbols := " !\"#$%&'()*+,/:;<=>?@[\\]^_`{|}~"
     if usesymbols {
-        palette = base + symbols
-    } else {
-        palette = base
+        palette += symbols
     }
     for i := uint(0); i < ncharacters; i++ {
         n, err := rand.Int(rand.Reader, big.NewInt(int64(len(palette))))
         if err != nil {
-            panic(err)
+            log.Fatalln(err)
         }
         password[i] = palette[n.Int64()]
     }
@@ -224,7 +222,11 @@ func GeneratePasswordFile() {
     var pwd PWData
     pwd.Records = make(map[string]Record)
     fmt.Println("Enter encryption password")
-    hash, salt := GenerateKey_HashNSalt(gopass.GetPasswd())
+    pass, err := gopass.GetPasswd()
+    if err != nil {
+        log.Fatalln(err)
+    }
+    hash, salt := GenerateKey_HashNSalt(pass)
     pwd.KeySalt = base64.URLEncoding.EncodeToString(salt)
     pwd.KeyHash = base64.URLEncoding.EncodeToString(hash)
     savePWData(&pwd)
@@ -251,7 +253,10 @@ func SetPassword(name string, username string, url string, length uint, useSymbo
         }
     }
     fmt.Println("Enter encryption password")
-    key := gopass.GetPasswd()
+    key, err := gopass.GetPasswd()
+    if err != nil {
+        log.Fatalln(err)
+    }
     if !ValidateKey(key, pwd.KeyHash, pwd.KeySalt) {
         fmt.Println("Invalid password")
         return
@@ -293,7 +298,10 @@ func GetPassword(name string) {
         fmt.Println("Username:", rec.Username)
     }
     fmt.Println("Enter encryption password")
-    key := gopass.GetPasswd()
+    key, err := gopass.GetPasswd()
+    if err != nil {
+        log.Fatalln(err)
+    }
     if !ValidateKey(key, pwd.KeyHash, pwd.KeySalt) {
         fmt.Println("Invalid password")
         return
@@ -315,8 +323,13 @@ func ListPasswordEntries() {
         return
     }
     fmt.Printf("List of Entries(%d):\n", len(pwd.Records))
+    recs := make([]string, 0, len(pwd.Records))
     for key, _ := range pwd.Records {
-        fmt.Println(key)
+        recs = append(recs, key)
+    }
+    sort.Strings(recs)
+    for _, v := range recs {
+        fmt.Println(v)
     }
 }
 

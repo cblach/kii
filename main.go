@@ -91,7 +91,7 @@ func setPassword(name string, opts *Opts) {
         }
         password = string(passwordBin)
     } else {
-        password := GenerateRandomPassword(opts.length, opts.useSymbols)
+        password = GenerateRandomPassword(opts.length, opts.useSymbols)
         if password == "" {
             return
         }

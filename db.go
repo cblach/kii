@@ -3,7 +3,6 @@ import(
     "encoding/json"
     "encoding/base64"
     "errors"
-    "flag"
     "fmt"
     "github.com/howeyc/gopass"
     "io/ioutil"
@@ -14,7 +13,7 @@ import(
     "runtime"
 )
 
-var filenamePtr *string
+var keyFile *string
 var usr *user.User
 // === Data structure ===
 
@@ -28,50 +27,42 @@ type Record struct{
 type PWData struct {
     Records map[string]Record `json:"records"`
     Settings struct {
-        
+
     } `json:"settings,omitempty"`
     KeySalt string `json:"keysalt"`
     KeyHash string `json:"keyhash"`
 }
 
-// === Load and save data from/to data file ===
-
 func loadPWData() (*PWData, error) {
     var pwd PWData
-    out, err := ioutil.ReadFile(*filenamePtr)
+    out, err := ioutil.ReadFile(*keyFile)
     if err != nil {
         return nil, err
     }
-    err = json.Unmarshal(out, &pwd)
-    if err != nil {
+    if err := json.Unmarshal(out, &pwd); err != nil {
         return nil, err
     }
     return &pwd, nil
 }
 
-func savePWData(pwd *PWData) (error) {
+func savePWData(pwd *PWData) error {
     out, err := json.MarshalIndent(pwd, "", "    ")
     if err != nil {
         return err
     }
-    err = ioutil.WriteFile(*filenamePtr+".tmp", out, 0600)
-    if err != nil {
+    if err := ioutil.WriteFile(*keyFile + ".tmp", out, 0600); err != nil {
         return err
     }
-    os.Remove(*filenamePtr)
-    err = os.Rename(*filenamePtr+".tmp", *filenamePtr)
-    if err != nil {
+    if err := os.Rename(*keyFile + ".tmp", *keyFile); err != nil {
         return err
     }
     return nil
 }
 
-// === Important Functions ===
-
-func GeneratePasswordFile() {
-    if _, err := os.Stat(*filenamePtr); !os.IsNotExist(err) {
-        fmt.Printf("File %s already exists. \nWrite YES (capital) if you want to overwrite it\n", *filenamePtr)
-        if !Confirm("YES") {
+func generatePasswordFile() {
+    if _, err := os.Stat(*keyFile); !os.IsNotExist(err) {
+        fmt.Printf("File %s already exists. \nWrite YES (capital) if you want to overwrite it\n", *keyFile)
+        if !confirm("YES") {
             fmt.Println("Exiting file generation")
             return
         }
@@ -86,10 +77,12 @@ func GeneratePasswordFile() {
     hash, salt := genValidationHashSalt(pass)
     pwd.KeySalt = base64.URLEncoding.EncodeToString(salt)
     pwd.KeyHash = base64.URLEncoding.EncodeToString(hash)
-    savePWData(&pwd)
+    if err := savePWData(&pwd); err != nil {
+        fmt.Println("Failed to save password data:", err)
+    }
 }
 
-func GetDropboxPath() string{
+func getDropboxPath() string{
     type DropboxInfo struct {
         Personal struct{
             Path string `json:"path"`
@@ -104,39 +97,38 @@ func GetDropboxPath() string{
     }
     out, err := ioutil.ReadFile(infoFile)
     if err != nil {
-        fmt.Println(err, infoFile)
-        return ""
+        if os.IsNotExist(err) {
+            return ""
+        }
+        log.Fatalln("failed to read dropbox kii file: ", err)
     }
     err = json.Unmarshal(out, &info)
     if err != nil {
-        fmt.Println(err)
-        return ""
+        log.Fatalln("failed to unmarshal dropbox kii file: ", err)
     }
     return filepath.ToSlash(info.Personal.Path)
 }
 
-func SetKeyFilePath() ( error) {
+func setKeyFilePath() error {
     usr, err := user.Current()
     if err != nil {
         panic(err)
     }
-    default_path := "PLACEHOLDER_PATH"
-    filenamePtr = flag.String("f", default_path, "filename (optional)")
-    if *filenamePtr != default_path {
-        if _, err := os.Stat(*filenamePtr); os.IsNotExist(err) {
+    if *keyFile != "" {
+        if _, err := os.Stat(*keyFile); os.IsNotExist(err) {
             return errors.New("Unable to find path")
         }
         return nil
     }
-    dropboxPath := GetDropboxPath()
+    dropboxPath := getDropboxPath()
     if dropboxPath != "" {
         if _, err = os.Stat(dropboxPath+"/kii.json"); !os.IsNotExist(err) {
-            *filenamePtr = dropboxPath+"/kii.json"
+            *keyFile = dropboxPath+"/kii.json"
             return nil
         }
     }
     if _, err = os.Stat(usr.HomeDir+"/kii.json"); !os.IsNotExist(err) {
-        *filenamePtr = usr.HomeDir+"/kii.json"
+        *keyFile = usr.HomeDir+"/kii.json"
         return nil
     }
     return errors.New("Unable to find file")

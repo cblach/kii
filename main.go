@@ -15,11 +15,12 @@ import(
 )
 
 type Opts struct {
-    username   *string
-    url        *string
-    length     *uint
-    isCustomPW *bool
-    noSymbols  *bool
+    keyPath    string
+    username   string
+    url        string
+    length     uint
+    isCustomPW bool
+    noSymbols  bool
 }
 
 /* Ask for confirmation string */
@@ -83,7 +84,7 @@ func setPassword(name string, opts *Opts) {
     }
     hash, salt := genEncryptionHashSalt(masterpw)
     var password string
-    if *opts.isCustomPW {
+    if opts.isCustomPW {
         fmt.Println("Enter custom password for record", name)
         passwordBin, err := gopass.GetPasswd()
         if err != nil {
@@ -91,7 +92,7 @@ func setPassword(name string, opts *Opts) {
         }
         password = string(passwordBin)
     } else {
-        password = genPassword(*opts.length, !*opts.noSymbols)
+        password = genPassword(opts.length, !opts.noSymbols)
     }
     clipboard.Primary = true
     clipboard.WriteAll(password)
@@ -99,8 +100,8 @@ func setPassword(name string, opts *Opts) {
     clipboard.WriteAll(password)
 
     pwd.Records[name] = Record {
-                                Username: *opts.username,
-                                Url: *opts.url,
+                                Username: opts.username,
+                                Url: opts.url,
                                 EncryptedPassword: encrypt(hash, password),
                                 Salt: base64.URLEncoding.EncodeToString(salt),
                              }
@@ -170,7 +171,8 @@ func rekey() {
     fmt.Println("Enter old encryption password")
     oldPass, err := gopass.GetPasswd()
     if err != nil {
-        log.Fatalln(err)
+        fmt.Println("failed to get old password from input:", err)
+        return
     }
     if !validateMasterPassword(oldPass, pwd.KeyHash, pwd.KeySalt) {
         fmt.Println("Invalid password")
@@ -179,24 +181,19 @@ func rekey() {
     fmt.Println("Enter new encryption password")
     newPass, err := gopass.GetPasswd()
     if err != nil {
-        log.Fatalln(err)
+        fmt.Println("failed to get new password from input:", err)
+        return
     }
     fmt.Println("Repeat new encryption password")
     newPassRepeat, err := gopass.GetPasswd()
     if err != nil {
-        log.Fatalln(err)
+        fmt.Println("failed to get repeat password from input:", err)
+        return
     }
     if string(newPass) != string(newPassRepeat) {
         fmt.Println("Repeated password does not match")
         return
     }
-    tmp := *keyFile
-    *keyFile += ".backup"
-    fmt.Printf("Saving backup to %s\n", keyFile)
-    if err := savePWData(pwd); err != nil {
-        log.Fatalln("Failed to save backup:", err)
-    }
-    *keyFile = tmp
     hash, salt := genValidationHashSalt(newPass)
     pwd.KeySalt = base64.URLEncoding.EncodeToString(salt)
     pwd.KeyHash = base64.URLEncoding.EncodeToString(hash)
@@ -204,7 +201,8 @@ func rekey() {
         fmt.Printf("Rekeying %s...\n", name)
         oldSalt, err := base64.URLEncoding.DecodeString(oldRec.Salt)
         if err != nil{
-            log.Fatalln("failed to base64 decode salt in record", name)
+            fmt.Println("failed to base64 decode salt in record", name)
+            return
         }
         oldHash := getEncryptionHash(oldPass, oldSalt)
         p := decrypt(oldHash, oldRec.EncryptedPassword)
@@ -214,85 +212,96 @@ func rekey() {
         newRec.EncryptedPassword = encrypt(newHash, p)
         pwd.Records[name] = newRec
     }
+    p := keyPath
+    keyPath = p + ".tmp"
+    fmt.Println("Saving to temporary file", keyPath)
     if err := savePWData(pwd); err != nil{
-        log.Fatalln("failed to save file:", err)
+        fmt.Println("failed to save data:", err)
+        os.Remove(keyPath)
+        return
+    }
+    fmt.Println("Succesfully rekeyed passwords to tmpfile. Moving tmpfile to", p)
+    if err := os.Rename(keyPath, p); err != nil {
+        fmt.Println("failed to move tmpfile:", err)
+        os.Remove(keyPath)
+        return
     }
     fmt.Println("Success")
 }
 
 
 func main() {
+    opts := Opts{}
+    flag.StringVar(&opts.keyPath, "f", "", "kii file path")
+    flag.StringVar(&opts.username, "u", "", "username")
+    flag.StringVar(&opts.url, "url", "", "url")
+    flag.UintVar(&opts.length, "l", 64, "password length")
+    flag.BoolVar(&opts.isCustomPW, "p", false, "set custom password")
+    flag.BoolVar(&opts.noSymbols, "noSymbols", false, "password contains no symbols")
+    flag.Parse()
+
     var err error
     usr, err = user.Current()
     if err != nil {
-        panic(err)
-    }
-    keyFile = flag.String("f", "", "keyFile (optional)")
-    if len(os.Args) < 2 {
-        fmt.Println("Valid Commands: \ngenfile\ngenpw\nget\nlist")
+        fmt.Println("error getting current user:", err)
         return
     }
-    switch os.Args[1] {
+    validCommands := "Valid Commands: genfile, set, get, list, rekey"
+    args := flag.Args()
+    if len(args) < 1 {
+        fmt.Println(validCommands)
+        return
+    }
+    switch args[0] {
     case "genfile":
-        flag.CommandLine.Parse(os.Args[2:])
-        if *keyFile == "" {
-            *keyFile = usr.HomeDir + "/kii.json"
+        if keyPath == "" {
+            keyPath = usr.HomeDir + "/kii.json"
         }
         generatePasswordFile()
     case "set":
-        opts := Opts {
-            username:   flag.String("u", "", "username"),
-            url:        flag.String("url", "", "url"),
-            length:     flag.Uint("l", 64, "password length"),
-            isCustomPW: flag.Bool("p", false, "set custom password"),
-            noSymbols:  flag.Bool("nosymbols", false, "password contains no symbols"),
-        }
-        flag.CommandLine.Parse(os.Args[2:])
         err := setKeyFilePath()
         if err != nil {
             fmt.Println(err)
             return
         }
-        if len(flag.Args()) == 0 {
+        if len(args) < 2 {
             fmt.Println("Usage: kii set $name\nFlags:")
             flag.PrintDefaults()
             return
         }
-        fmt.Println("Using", *keyFile)
-        setPassword(flag.Args()[0], &opts)
+        fmt.Println("Using", keyPath)
+        setPassword(args[1], &opts)
     case "get":
-        flag.CommandLine.Parse(os.Args[2:])
         err := setKeyFilePath();
         if err != nil {
             fmt.Println(err)
             return
         }
-        if len(flag.Args()) == 0 {
+        if len(args) < 2 {
             fmt.Println("Usage: kii set $name\nFlags:")
             flag.PrintDefaults()
             return
         }
-        fmt.Println("Using", *keyFile)
-        getPassword(flag.Args()[0])
+        fmt.Println("Using", keyPath)
+        getPassword(args[1])
     case "list":
-        flag.CommandLine.Parse(os.Args[2:])
         err := setKeyFilePath();
         if err != nil {
             fmt.Println(err)
             return
         }
-        fmt.Println("Using", *keyFile)
+        fmt.Println("Using", keyPath)
         list()
     case "rekey":
-        flag.CommandLine.Parse(os.Args[2:])
         err := setKeyFilePath();
         if err != nil {
             fmt.Println(err)
             return
         }
-        fmt.Println("Using", *keyFile)
+        fmt.Println("Using", keyPath)
         rekey()
     default:
-        fmt.Println("Invalid command.")
+        fmt.Println("Invalid command")
+        fmt.Println(validCommands)
     }
 }

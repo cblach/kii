@@ -13,7 +13,7 @@ import(
     "runtime"
 )
 
-var keyFile *string
+var keyPath string
 var usr *user.User
 // === Data structure ===
 
@@ -35,7 +35,7 @@ type PWData struct {
 
 func loadPWData() (*PWData, error) {
     var pwd PWData
-    out, err := ioutil.ReadFile(*keyFile)
+    out, err := ioutil.ReadFile(keyPath)
     if err != nil {
         return nil, err
     }
@@ -50,18 +50,18 @@ func savePWData(pwd *PWData) error {
     if err != nil {
         return err
     }
-    if err := ioutil.WriteFile(*keyFile + ".tmp", out, 0600); err != nil {
+    if err := ioutil.WriteFile(keyPath + ".tmp", out, 0600); err != nil {
         return err
     }
-    if err := os.Rename(*keyFile + ".tmp", *keyFile); err != nil {
+    if err := os.Rename(keyPath + ".tmp", keyPath); err != nil {
         return err
     }
     return nil
 }
 
 func generatePasswordFile() {
-    if _, err := os.Stat(*keyFile); !os.IsNotExist(err) {
-        fmt.Printf("File %s already exists. \nWrite YES (capital) if you want to overwrite it\n", *keyFile)
+    if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+        fmt.Printf("File %s already exists. \nWrite YES (capital) if you want to overwrite it\n", keyPath)
         if !confirm("YES") {
             fmt.Println("Exiting file generation")
             return
@@ -72,7 +72,8 @@ func generatePasswordFile() {
     fmt.Println("Enter encryption password")
     pass, err := gopass.GetPasswd()
     if err != nil {
-        log.Fatalln(err)
+        fmt.Println("failed to get password from input:", err)
+        return
     }
     hash, salt := genValidationHashSalt(pass)
     pwd.KeySalt = base64.URLEncoding.EncodeToString(salt)
@@ -114,8 +115,8 @@ func setKeyFilePath() error {
     if err != nil {
         panic(err)
     }
-    if *keyFile != "" {
-        if _, err := os.Stat(*keyFile); os.IsNotExist(err) {
+    if keyPath != "" {
+        if _, err := os.Stat(keyPath); os.IsNotExist(err) {
             return errors.New("Unable to find path")
         }
         return nil
@@ -123,12 +124,12 @@ func setKeyFilePath() error {
     dropboxPath := getDropboxPath()
     if dropboxPath != "" {
         if _, err = os.Stat(dropboxPath+"/kii.json"); !os.IsNotExist(err) {
-            *keyFile = dropboxPath+"/kii.json"
+            keyPath = dropboxPath+"/kii.json"
             return nil
         }
     }
     if _, err = os.Stat(usr.HomeDir+"/kii.json"); !os.IsNotExist(err) {
-        *keyFile = usr.HomeDir+"/kii.json"
+        keyPath = usr.HomeDir+"/kii.json"
         return nil
     }
     return errors.New("Unable to find file")
